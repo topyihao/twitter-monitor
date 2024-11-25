@@ -38,6 +38,14 @@ pip3 install -r ./requirements.txt
     python3 main.py generate-auth-cookie --username "{username}" --password "{password}"
     ```
 
+- If you failed to login using the above command, you can use the following method to manually export twitter cookies and import it into the project
+  1. Export cookies from your browser using the plugin [Export cookie JSON file for Puppeteer](https://chromewebstore.google.com/detail/export-cookie-json-file-f/nmckokihipjgplolmcmjakknndddifde?hl=en). You will get a JSON file *x.com.cookies.json*
+  2. Convert the cookies using the following command, the username and email are your twitter account username and email
+
+    ```bash
+    python3 cookie_converter.py --file "{cookies_file_path/x.com.cookies.json}" --username "{username}" --email "{email}"
+    ```
+
 ### Fill in config
 
 - First make a copy from the config templates
