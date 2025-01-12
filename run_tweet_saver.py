@@ -116,7 +116,8 @@ class TweetSaverManager:
                     username=user['username'],
                     token_config=token_config,
                     user_config=user,
-                    cookies_dir=cookies_dir
+                    cookies_dir=cookies_dir, 
+                    storage_type='mongodb'
                 )
                 self.savers.append(saver)
                 

@@ -11,6 +11,7 @@ from utils import (parse_media_from_tweet, parse_text_from_tweet,
                   parse_create_time_from_tweet, find_all, find_one, 
                   get_content, convert_html_to_text)
 
+from database_manager import DatabaseManager
 
 def _verify_tweet_user_id(tweet: dict, user_id: str) -> bool:
     user = find_one(tweet, 'user_results')
@@ -20,26 +21,22 @@ def _verify_tweet_user_id(tweet: dict, user_id: str) -> bool:
 class TweetSaver(MonitorBase):
     monitor_type = 'TweetSaver'
 
-    def __init__(self, username: str, token_config: dict, user_config: dict, cookies_dir: str):
+    def __init__(self, username: str, token_config: dict, user_config: dict, cookies_dir: str, storage_type: str='mangodb'):
         super().__init__(monitor_type=self.monitor_type,
                         username=username,
                         token_config=token_config,
                         user_config=user_config,
                         cookies_dir=cookies_dir)
         
-        # Create output directory for saved tweets
-        self.output_dir = os.path.join(os.path.dirname(__file__), 'saved_tweets', username)
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Setup logging for this specific user
-        self.logger = logging.getLogger(f'tweet_saver_{username}')
-        log_file = os.path.join(os.path.dirname(__file__), 'log', f'tweet_saver_{username}.log')
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(file_handler)
-        self.logger.setLevel(logging.INFO)
+        self.storage_type = storage_type.lower()
+        if self.storage_type not in ['mongodb', 'json']:
+            raise ValueError("storage_type must be either 'mongodb' or 'json'")
 
+        # Create output directory for saved tweets if using JSON storage
+        self.output_dir = os.path.join(os.path.dirname(__file__), 'saved_tweets', username)
+        if self.storage_type == 'json':
+            os.makedirs(self.output_dir, exist_ok=True)
+     
         tweet_list = self.get_tweet_list()
         while tweet_list is None:
             self.logger.warning(f"Failed to get tweets for {username}, retrying...")
@@ -49,6 +46,9 @@ class TweetSaver(MonitorBase):
         for tweet in tweet_list:
             if _verify_tweet_user_id(tweet, self.user_id):
                 self.last_tweet_id = max(self.last_tweet_id, int(find_one(tweet, 'rest_id')))
+
+        # Initialize database manager only if using MongoDB
+        self.db_manager = DatabaseManager() if self.storage_type == 'mongodb' else None
 
         self.logger.info(f'Initialized tweet saver for {username}. User ID: {self.user_id}, Last tweet: {self.last_tweet_id}')
 
@@ -63,34 +63,20 @@ class TweetSaver(MonitorBase):
         json_response = self.twitter_watcher.query(api_name, params)
         return find_all(json_response, 'tweet_results') if json_response else None
 
+    # In the save_tweet_to_file method:
     def save_tweet_to_file(self, tweet_data: dict, text: str, photo_urls: list, video_urls: list):
-        """
-        Save tweet data in a format optimized for LLM analysis.
-        
-        The saved format includes:
-        - Core tweet content
-        - Engagement metrics
-        - Context and relationships
-        - Temporal information
-        - Media references
-        - Conversation context
-        """
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        """Save tweet data optimized for AI analysis"""
         tweet_id = find_one(tweet_data, 'rest_id')
-        
-        # Extract engagement metrics
         engagement = get_content(tweet_data).get('legacy', {})
         
         output = {
             # Basic Information
             'tweet_id': tweet_id,
             'username': self.username,
-            'timestamp': timestamp,
             'created_at': parse_create_time_from_tweet(tweet_data).isoformat(),
             
             # Content
-            # 'full_text': text,
-            'cleaned_text': self._clean_text(text),  # Remove URLs, mentions, etc.
+            'cleaned_text': self._clean_text(text),
             'hashtags': self._extract_hashtags(text),
             'mentions': self._extract_mentions(text),
             'urls': self._extract_urls(text),
@@ -102,50 +88,40 @@ class TweetSaver(MonitorBase):
                 'has_media': bool(photo_urls or video_urls)
             },
             
-            # Engagement Metrics
-            # 'engagement': {
-            #     'retweet_count': engagement.get('retweet_count', 0),
-            #     'reply_count': engagement.get('reply_count', 0),
-            #     'like_count': engagement.get('favorite_count', 0),
-            #     'quote_count': engagement.get('quote_count', 0)
-            # },
+            # Engagement
+            'engagement': {
+                'retweet_count': engagement.get('retweet_count', 0),
+                'reply_count': engagement.get('reply_count', 0),
+                'like_count': engagement.get('favorite_count', 0),
+                'quote_count': engagement.get('quote_count', 0)
+            },
             
             # Context
-            # 'is_retweet': bool(find_one(tweet_data, 'retweeted_status_result')),
-            # 'is_reply': bool(engagement.get('in_reply_to_status_id_str')),
-            # 'is_quote': bool(find_one(tweet_data, 'quoted_status_result')),
+            'is_retweet': bool(find_one(tweet_data, 'retweeted_status_result')),
+            'is_reply': bool(engagement.get('in_reply_to_status_id_str')),
+            'is_quote': bool(find_one(tweet_data, 'quoted_status_result')),
+            'conversation_id': engagement.get('conversation_id_str'),
             
-            # Conversation Context
-            # 'reply_to': {
-            #     'username': engagement.get('in_reply_to_screen_name'),
-            #     'tweet_id': engagement.get('in_reply_to_status_id_str')
-            # },
-            
-            # Source/Client Information
-            # 'client': convert_html_to_text(find_one(tweet_data, 'source')),
-            
-            # Language and Location (if available)
+            # Language and Location
             'language': get_content(tweet_data).get('lang'),
             'location': get_content(tweet_data).get('location'),
-            
         }
         
-        # Add quoted tweet content if present
-        # quote = find_one(tweet_data, 'quoted_status_result')
-        # if quote:
-        #     output['quoted_tweet'] = {
-        #         'username': get_content(find_one(quote, 'user_results')).get('screen_name'),
-        #         'text': get_content(quote).get('full_text', ''),
-        #         'tweet_id': find_one(quote, 'rest_id')
-        #     }
-        
-        filename = f"{tweet_id}_{timestamp}.json"
-        filepath = os.path.join(self.output_dir, filename)
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
-        
-        self.logger.info(f'Saved tweet {tweet_id} to {filepath}')
+        if self.storage_type == 'mongodb':
+            success = self.db_manager.save_tweet(output)
+            if success:
+                self.logger.info(f'Saved tweet {tweet_id} to MongoDB')
+            else:
+                self.logger.error(f'Failed to save tweet {tweet_id} to MongoDB')
+        else:  # JSON storage
+            try:
+                file_path = os.path.join(self.output_dir, f'tweet_{tweet_id}.json')
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(output, f, ensure_ascii=False, indent=2)
+                self.logger.info(f'Saved tweet {tweet_id} to JSON file')
+            except Exception as e:
+                self.logger.error(f'Failed to save tweet {tweet_id} to JSON: {str(e)}')
+
 
     def _clean_text(self, text: str) -> str:
         """Remove URLs, mentions, and special characters for better NLP processing"""
@@ -182,23 +158,6 @@ class TweetSaver(MonitorBase):
         elif get_content(tweet_data).get('legacy', {}).get('in_reply_to_status_id_str'):
             return 'reply'
         return 'original'
-
-    def _categorize_content(self, text: str) -> list:
-        """Basic categorization of tweet content"""
-        categories = []
-        text_lower = text.lower()
-        
-        # Simple rule-based categorization
-        if any(word in text_lower for word in ['announce', 'launching', 'new']):
-            categories.append('announcement')
-        if '?' in text:
-            categories.append('question')
-        if any(word in text_lower for word in ['thanks', 'thank you', 'grateful']):
-            categories.append('gratitude')
-        if len(self._extract_hashtags(text)) > 0:
-            categories.append('hashtag_campaign')
-        
-        return categories
 
     def _extract_sentiment_indicators(self, text: str) -> dict:
         """Extract basic sentiment indicators"""
