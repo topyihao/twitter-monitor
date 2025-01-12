@@ -105,9 +105,7 @@ python3 main.py run
     "mongodb_uri": "mongodb://localhost:27017/",
     "database": "twitter_monitor",
     "collections": {
-      "tweets": "tweets",
-      "user_metrics": "user_metrics",
-      "analysis": "analysis"
+      "tweets": "tweets"
     }
   }
 }
