@@ -18,7 +18,7 @@ class ConfigManager:
     def load_config(self):
         """Load configuration from file and environment variables"""
         # Get environment (default to development)
-        env = os.getenv('ENVIRONMENT', 'development')
+        env = 'development'
         
         # Load base config
         config_path = os.path.join(os.path.dirname(__file__), 'config', 'database.json')
